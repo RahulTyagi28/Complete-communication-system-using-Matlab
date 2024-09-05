@@ -1,0 +1,376 @@
+clc;
+clear; 
+close all; 
+time_start = tic; %tic toc:clock timer to measure time elapsed
+
+
+%% initialisation phase
+
+modulation_scheme = 'BPSK'; % choose from BASK, BPSK
+samples_bit = 40; 
+bit_rate = 700; 
+amp = [1 0];
+freq = 500;                         
+SNR_db = 10; 
+sequence_generator = [1 1 1; 1 0 1]; 
+shift = 1; 
+
+
+%% read data to be transmitted from a text file
+tic
+fprintf('Read data from file '); 
+file = fopen('Program/data_file_tx.txt');
+text_data = fread(file,'*char')';
+fclose(file);
+toc 
+
+
+%% Characterizing source
+fprintf('Source data: '); 
+tic
+[symbols, probability] = source_data(text_data); 
+toc 
+
+
+%% Huffman encoding: lossless data compression algo
+
+fprintf('Huffman encoding: '); 
+tic 
+coded_data = huffman_encoder(probability); 
+toc 
+
+
+%% generation of data stream
+tic
+fprintf('Data stream generation: '); 
+bit_stream = generate_stream(symbols, coded_data, text_data);
+input = bit_stream;
+toc 
+
+
+%% Channel coding(convolutional coding)
+tic
+fprintf('Channel coding: '); 
+
+channel_coded = convolutional_coder(bit_stream, sequence_generator);
+toc 
+
+
+%% Modulation (BPSK,BASK)
+tic
+fprintf('Modulation: ');
+modulated_input = modulation(modulation_scheme, channel_coded, bit_rate, samples_bit, amp, freq); 
+toc 
+
+
+%% AWGN channel modelling
+tic
+fprintf('Noise in Channel: ');
+received = noise_awgn(modulated_input, SNR_db); 
+toc 
+
+% Processing at the receiver
+
+%% 1. Demodulation 
+tic
+fprintf('Demodulation: ');
+bit_stream = demodulation(modulation_scheme, received, bit_rate, samples_bit, amp, freq);
+toc
+
+
+%% 2. Channel decoding using viterbi decoder
+tic
+fprintf('Channel decoding: ');
+bit_stream = viterbi_decoder(bit_stream, sequence_generator, shift); 
+output = bit_stream; 
+toc
+
+
+%% 3. Huffman decoding
+tic
+fprintf('Huffman decoding: ');
+decoded_message = huffman_decoder(symbols, coded_data, bit_stream); 
+toc 
+
+
+%% Writing received data to file
+tic
+fprintf('Data writing to file: ');
+f = fopen('Program/data_file_rx.txt','w+');
+fprintf(f, decoded_message);
+fclose(f);
+toc
+
+
+%% Time and error calculation
+fprintf('Execution time results: ');
+toc(time_start); 
+
+Error_rx = sum(abs(input - output)); % error between tx and rx data 
+disp(['Bit Error results: ' num2str(Error_rx)]); 
+
+
+% All function definitions go here
+% 1
+function [symbols, symbol_probability] = source_data(text)
+
+symbols = unique(text); % stores unique symbols from text file
+count_symbol = histc(text, symbols);
+
+% calculate symbol probability 
+symbol_probability = count_symbol / length(text); 
+
+% sort probability values
+[symbol_probability, index] = sort(symbol_probability, 'descend'); 
+symbols = symbols(index);
+end
+
+%2
+function msg_code_word = huffman_encoder(prob)
+
+
+n = length(prob); 
+msg_code_word = cell(1, n);
+
+% descending to ascending 
+prob = fliplr(prob); 
+
+% initializing code word for n = 1 case 
+if n == 1
+    msg_code_word{1} = '1'; 
+end
+x = zeros(n, n); 
+x(:, 1) = (1:n)'; 
+
+for i = 1:n-1
+    temp = prob; 
+    [~, min1] = min(temp);  
+    temp(min1) = 1; 
+    [~, min2] = min(temp); 
+    prob(min1) = prob(min1) + prob(min2); 
+    prob(min2) = 1; 
+    x(:, i+1) = x(:, i); 
+    for j = 1:n
+        if x(j, i+1) == min1
+            msg_code_word(j) = strcat('0', msg_code_word(j)); 
+        elseif x(j, i+1) == min2
+            x(j, i+1) = min1; 
+            msg_code_word(j) = strcat('1', msg_code_word(j));
+        end
+    end
+end
+msg_code_word = fliplr(msg_code_word); 
+end
+
+%3
+function bit_stream_gen = generate_stream(symbols, coded_data, msg)
+
+
+bit_stream_gen = '';
+increment_fn = length(char(symbols(1))); 
+for i = 1:increment_fn:length(msg)
+    index = strfind(symbols, msg(i:i+increment_fn-1)); 
+    bit_stream_gen = [bit_stream_gen char(coded_data(index))];
+end
+
+bit_stream_gen = double(bit_stream_gen - double('0')); 
+end
+
+%4
+function conv_code_out = convolutional_coder(bit_stream, G)
+
+
+conv_code_out = conv2(bit_stream, G);
+conv_code_out = rem(conv_code_out, 2);
+[row, col] = size(conv_code_out);
+conv_code_out = reshape (conv_code_out, 1, row * col);
+end
+
+%5
+function modulated_data = modulation(modulation_scheme, bit_stream, bit_rate, k, amp, freq)
+
+modulated_data = []; 
+
+% converting string to vector 
+N = length(bit_stream); 
+
+% process of line coding
+line_coded_data= repelem(bit_stream, k); 
+
+Tb = 1/bit_rate;      % bit duration 
+Fs = k * bit_rate;    % sampling frequency 
+Ts = 1 / Fs;
+time = 0 : Ts : N*Tb-Ts;
+
+switch modulation_scheme
+    case {'bask','BASK'}
+        carrier_data = sin(2*pi*freq*time); 
+        a1 = amp(1); 
+        a0 = amp(2);
+        line_coded_data = a1 * line_coded_data + a0 .* (line_coded_data==0); 
+        modulated_data = line_coded_data .* carrier_data;
+    
+    case {'bpsk','BPSK'}
+        a = amp(1);
+        carrier_data = sin(2*pi*freq*time); 
+        line_coded_data = a .* (line_coded_data == 1) + (-a) .* (line_coded_data == 0); 
+        modulated_data = line_coded_data .* carrier_data;
+        
+    otherwise
+        fprintf('\n'); 
+        warning(['"', modulation_scheme, '" Modulation is not supported! ONLY BASK, BPSK, QPSK are supported.']);
+        return; 
+end
+end
+
+%6
+function awgn_noise_model = noise_awgn(modulated, snr_db)
+
+    awgn_noise_model = awgn(modulated, snr_db, 'measured'); 
+    
+end
+
+%7
+function bit_stream = demodulation(modulation_name, received, Rb, k, amp, freq)
+
+
+n = length(received) / k;   % n = number of bits 
+Tb = 1/Rb; 
+Fs = k * Rb; 
+Ts = 1/Fs; 
+t = 0 : Ts : n*Tb-Ts;
+bit_stream = []; 
+
+switch modulation_name
+    case 'BASK'
+        a0 = amp(1); 
+        a1 = amp(2);
+        r = received .* sin(2*pi*freq(1)*t);
+        r = reshape(r, k, n); 
+        yd = mean(r); 
+        threshold = (a0 + a1) / 4; 
+        bit_stream = (yd >= threshold);
+        
+    case 'BPSK'
+        r = received .* sin(2*pi*freq(1)*t); 
+        r = reshape(r, k, n); 
+        yd = mean(r); 
+        threshold = 0;
+        bit_stream = (yd >= threshold);
+    
+    case 'QPSK'
+        M = 4; 
+        bn = log2(M);
+        t = 0 : Ts : bn*Tb-Ts;
+        A = amp(1); 
+        f = freq(1); 
+        space = length(t);
+        for i = 1:space:length(received)
+            sig = received(i:(i-1)+space); 
+            r1 = sig .* sin(2*pi*f*t); 
+            r2 = sig .* cos(2*pi*f*t); 
+            ai = mean(r1); 
+            aq = mean(r2); 
+            phi = (0:M-1) * 2 * pi ./ M; 
+            distance = (A*cos(phi) - 2*ai).^2 + (A*sin(phi) - 2*aq).^2;  
+            [~, min_ind] = min(distance);
+            min_ind = min_ind - 1; 
+            sym = de2bi(min_ind, bn); 
+            bit_stream = [bit_stream sym];
+        end
+        
+    otherwise
+        disp('WARNING [ :( ] . . . '); 
+        disp(['"', modulation_name, '" : Not supported! enter BASK, BPSK, QPSK']);
+end
+
+
+bit_stream = double(bit_stream); 
+end
+
+%8
+function decoded_message_data = huffman_decoder(unique_symbol, code_word, bit_stream)
+
+
+
+decoded_message_data = []; 
+
+
+i_min = min(cellfun('length', code_word));
+
+
+ptr = 1; 
+for i = i_min:length(bit_stream)
+    if isempty(find(strcmp(code_word, char(bit_stream(ptr:i) + '0')), 1)) ~= 1
+        ind = find(strcmp(code_word, char(bit_stream(ptr:i) + '0')), 1); 
+        decoded_message_data = [decoded_message_data char(unique_symbol(ind))]; 
+        ptr = i + 1; 
+        i = i + i_min; 
+    end
+end
+end
+
+%9
+function decoded_stream = viterbi_decoder(y, G, k)
+% INPUT: 
+%   y = coded bit stream 
+%   G = Generator matrix
+%   k = shift
+% OUTPUT: 
+%   decoded_stream = decoded bit stream 
+
+[row, col] = size(G); 
+l = col;    % l = constraint length
+n = row;    % n = output size 
+
+data_states = de2bi(0:2^(l-k)-1, (l-k), 'left-msb'); 
+
+% output for zero and one contains possible output for each state for input
+% zero and one 
+output_for_zero = zeros(2^n, n); 
+output_for_one = zeros(2^n, n);
+
+for i = 1:size(data_states, 1) 
+    output = sum(bsxfun(@times, G, [0 data_states(i, :)]), 2); 
+    output_for_zero(i, :) = output'; 
+    output = sum(bsxfun(@times, G, [1 data_states(i, :)]), 2); 
+    output_for_one(i, :) = output'; 
+end
+output_for_zero = rem(output_for_zero, 2); 
+output_for_one = rem(output_for_one, 2); 
+
+row = length(y)/n; 
+col = n; 
+y = reshape(y, col, row);
+
+path_metric = zeros(2^(l-k), size(y, 2)+1); 
+path_metric(2:end) = Inf; 
+decoded_stream = [];
+
+% assigning alpha and beta (where from each state comes)
+alpha = zeros(1, 2^n); 
+beta = zeros(1, 2^n); 
+for i = 1:size(data_states, 1)
+    alpha(i) = find(ismember(data_states, [data_states(i, 2) 0], 'rows')); 
+    beta(i) = find(ismember(data_states, [data_states(i, 2) 1], 'rows')); 
+end
+
+% decoding 
+for i = 1:size(path_metric, 2)-1
+    rcvd = y(:, i)'; 
+    branch_metric_0 = sum(abs(bsxfun(@minus, output_for_zero, rcvd)), 2); 
+    branch_metric_1 = sum(abs(bsxfun(@minus, output_for_one, rcvd)), 2); 
+    branch_metric = [branch_metric_0 branch_metric_1]; 
+    pos_out = []; 
+    for j = 1:size(data_states, 1)
+        pos_out = [pos_out data_states(j, 2)];
+        a = path_metric(alpha(j), i) + branch_metric(alpha(j), data_states(j, 1)+1); 
+        b = path_metric(beta(j), i) + branch_metric(beta(j), data_states(j, 1)+1);  
+        path_metric(j, i+1) = min(a, b); 
+    end
+    [~, min_ind] = min(path_metric(:, i+1)); 
+    decoded_stream = [decoded_stream pos_out(min_ind)]; 
+end
+decoded_stream(1) = []; 
+decoded_stream(end) = [];
+end
